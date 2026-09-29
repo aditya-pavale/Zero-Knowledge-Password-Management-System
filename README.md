@@ -1,5 +1,7 @@
 # Zero-Knowledge Secure Password Vault & AI-Assisted Security Platform
 
+[![vault-ci](https://github.com/aditya-pavale/Zero-Knowledge-Password-Management-System/actions/workflows/vault-ci.yml/badge.svg)](https://github.com/aditya-pavale/Zero-Knowledge-Password-Management-System/actions/workflows/vault-ci.yml)
+
 A multi-user password vault where every secret is encrypted **in the browser** before it is
 uploaded. The Django server stores only ciphertext and can't read users' passwords, not even
 their item titles. Users can share entries with hybrid RSA/AES encryption and RSA-PSS
