@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8.0
+pytest-django>=4.8
+bandit[toml]>=1.7
+semgrep>=1.60

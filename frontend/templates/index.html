@@ -1,0 +1,27 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ZK Vault</title>
+  <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
+  <link rel="stylesheet" href="{% static 'css/style.css' %}">
+  <script src="{% static 'vendor/argon2.umd.min.js' %}" defer></script>
+  <script type="module" src="{% static 'js/app.js' %}"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true">&#128274;</span> ZK Vault</div>
+    <nav id="nav" class="nav" hidden></nav>
+    <div id="whoami" class="whoami" hidden></div>
+  </header>
+
+  <main id="app" class="container">
+    <noscript>This vault encrypts everything in your browser and needs JavaScript.</noscript>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="modal" class="modal"></dialog>
+</body>
+</html>

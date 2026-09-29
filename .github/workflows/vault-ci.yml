@@ -1,0 +1,160 @@
+# DevSecOps pipeline for the Zero-Knowledge Password Vault
+#   push -> tests -> security scans (SAST) -> build image -> DAST (OWASP ZAP) -> AI analysis
+name: vault-ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vault-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    name: Tests (pytest + JS crypto)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: vault
+          POSTGRES_USER: vault
+          POSTGRES_PASSWORD: vault
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U vault" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://vault:vault@localhost:5432/vault
+      DJANGO_SECRET_KEY: ci-only-secret-key-not-used-anywhere-else
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Migrations are up to date
+        run: python manage.py makemigrations --check --dry-run
+      - run: python manage.py check --deploy --fail-level ERROR
+      - run: pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Client-side crypto tests
+        run: node --test frontend/tests/
+
+  sast:
+    name: Security scans (Bandit + Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install "bandit[toml]" semgrep
+      - name: Bandit (JSON report)
+        run: mkdir -p reports && bandit -r accounts vault sharing audit analyzer vault_project -f json -o reports/bandit.json || true
+      - name: Semgrep (JSON report)
+        run: semgrep scan --metrics=off --config p/python --config p/django --config p/javascript --config p/secrets --json -o reports/semgrep.json . || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sast-reports
+          path: reports/
+      - name: Gate - Bandit medium+ severity fails the build
+        run: bandit -r accounts vault sharing audit analyzer vault_project -ll
+      - name: Gate - Semgrep findings fail the build
+        run: semgrep scan --metrics=off --error --config p/python --config p/django --config p/javascript --config p/secrets .
+
+  build:
+    name: Build Docker image
+    needs: [test, sast]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: zk-vault:ci
+          outputs: type=docker,dest=/tmp/zk-vault.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: /tmp/zk-vault.tar
+          retention-days: 1
+
+  dast:
+    name: DAST (OWASP ZAP)
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      DJANGO_SECRET_KEY: ci-only-secret-key-not-used-anywhere-else
+      POSTGRES_PASSWORD: ci-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: image
+          path: /tmp
+      - run: docker load -i /tmp/zk-vault.tar
+      - name: Start stack
+        run: |
+          docker tag zk-vault:ci zk-vault:local
+          docker compose up -d --no-build
+          for i in $(seq 1 60); do curl -fsS http://localhost:8000/api/health/ && break; sleep 2; done
+      - name: ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: http://localhost:8000
+          rules_file_name: .zap/rules.tsv
+          cmd_options: "-a"
+          allow_issue_writing: false
+          fail_action: false
+      - name: Collect ZAP report
+        run: mkdir -p reports && cp report_json.json reports/zap.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dast-reports
+          path: reports/
+      - if: always()
+        run: docker compose logs web | tail -100; docker compose down -v
+
+  ai-analysis:
+    name: AI vulnerability analysis
+    needs: [sast, dast]
+    if: always() && needs.sast.result != 'skipped'
+    runs-on: ubuntu-latest
+    env:
+      DJANGO_SECRET_KEY: ci-only-secret-key-not-used-anywhere-else
+      # Optional repository secret. Without it the offline knowledge base is used.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-reports"
+          merge-multiple: true
+          path: reports
+      - name: Explain findings
+        run: |
+          python manage.py analyze_findings \
+            --bandit reports/bandit.json --semgrep reports/semgrep.json --zap reports/zap.json \
+            --out reports/ai-analysis.md --json-out reports/ai-analysis.json > /dev/null
+          cat reports/ai-analysis.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-analysis
+          path: reports/ai-analysis.*

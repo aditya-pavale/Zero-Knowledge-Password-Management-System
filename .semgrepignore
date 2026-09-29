@@ -1,0 +1,7 @@
+.venv/
+node_modules/
+staticfiles/
+frontend/static/vendor/
+tests/
+frontend/tests/
+scripts/
